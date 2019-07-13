@@ -226,7 +226,7 @@ class RangeAnalyserGui:
             self.analyser.analyses[analysis.name] = analysis
             analysis_guis.append(analysis.gui.as_row())
 
-        layout = bklayouts.layout(self.fig, self.range_slide, *analysis_guis)
+        layout = bklayouts.layout([self.fig, bklayouts.column(*analysis_guis)], self.range_slide)
 
         def modify_doc(doc):
             doc.add_root(layout)
@@ -274,8 +274,8 @@ class BaseAnalysisGui:
         """
         pass
 
-    def as_row(self):
-        return bklayouts.row(self.label_input, self.do_button)
+    def as_row(self, width=300):
+        return bklayouts.row(self.label_input, self.do_button, width=width)
 
 
 class BaseAnalysis:
