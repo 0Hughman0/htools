@@ -7,7 +7,13 @@ from bokeh.application import Application
 from bokeh.application.handlers import FunctionHandler
 from bokeh.io import show
 from bokeh.models import HoverTool, Span, RangeSlider, widgets, annotations, TextInput, NormalHead
+from bokeh.core.has_props import HasProps
+from bokeh.model import Model
+from bokeh.core.properties import Bool
 from bokeh.models.callbacks import CustomJS
+import bokeh.palettes
+
+import itertools
 
 import numpy as np
 
@@ -47,8 +53,12 @@ class RangeAnalyser:
         self.df = df.copy()
         self.ylabel = ylabel
         self.xlabel = xlabel
-
+        
         self.analyses = {}
+
+        self._start = None
+        self._end = None
+        self._range_state = RangeState()
 
         self.gui = RangeAnalyserGui(self)
 
@@ -71,14 +81,14 @@ class RangeAnalyser:
         """
         width of x data
         """
-        return self.x[-1] - self.x[0]
+        return self.x.values[-1] - self.x.values[0]
 
     @property
     def yrange(self):
         """
         height of y data
         """
-        return self.y[-1] - self.y[0]
+        return self.y.values[-1] - self.y.values[0]
 
     @property
     def n(self):
@@ -99,22 +109,42 @@ class RangeAnalyser:
         """
         current start value of slider
         """
-        return self.gui.range_slide.value[0]
+        return self._start if self._start else self.gui.start
+
+    @start.setter
+    def start(self, val):
+        self._start = val
 
     @property
     def end(self):
         """
         current end value of slider
         """
-        return self.gui.range_slide.value[1]
+        return self._end if self._end else self.gui.end
+
+    @end.setter
+    def end(self, val):
+        self._end = val
+
+    def connect(self):
+        self.start = None
+        self.end = None
+
+    @property
+    def start_connected(self):
+        return self._start is None
+
+    @property
+    def end_connected(self):
+        return self._end is None
 
     @property
     def range(self):
         """
         subsection of `df` containing data between range of slider
         """
-        xlabel = self.xlabel if self.xlabel else 'index'
-        return self.df.query(f"{self.start} <= {xlabel} <= {self.end}")
+        x = self.x
+        return self.df[(x > self.start) & (x < self.end)]
 
     @property
     def rangex(self):
@@ -156,16 +186,23 @@ class RangeAnalyser:
     def __getattr__(self, item):
         if item in self.analyses:
             return self.analyses[item]
-        raise AttributeError
+        raise AttributeError(item)
+
+    def __repr__(self):
+        return (f"<RangeAnalyser " 
+                f"x: {self.xlabel if self.xlabel else 'df.index'} y: {self.ylabel}," 
+                f" start: {self.start} ({'connected' if self.start_connected else 'disconnected'})"
+                f" end: {self.end} ({'connected' if self.end_connected else 'disconnected'})>")
 
 
 class RangeAnalyserGui:
     move_spans = \
         """
         start_span.location = cb_obj.value[0];
-        end_span.location = cb_obj.value[1];
         start_span.change.emit();
+        end_span.location = cb_obj.value[1];        
         end_span.change.emit();
+        }
         """
 
     update_range_slide = \
@@ -183,20 +220,59 @@ class RangeAnalyserGui:
 
         self.fig = self.make_fig()
 
-        init_start = self.analyser.x[self.analyser.n // 10]
-        init_end = self.analyser.x[-self.analyser.n // 10]
+        init_start = self.analyser.x.min() * 1.1
+        init_end = self.analyser.x.max() * 0.9
 
         span_kwargs = dict(dimension='height', line_dash='dashed', line_width=3)
         self.start_span = Span(location=init_start, line_color='green', **span_kwargs)
         self.end_span = Span(location=init_end, line_color='red', **span_kwargs)
 
-        self.range_slide = RangeSlider(start=self.analyser.x[0], end=self.analyser.x[-1], step=self.analyser.dx,
+        self.range_slide = RangeSlider(start=self.analyser.x.min(), end=self.analyser.x.max(), step=self.analyser.dx,
                                        value=(init_start, init_end),
                                        width=self.fig.plot_width)
+
+        self.start_connected = widgets.Button(label="start", button_type='success')
+        self.end_connected = widgets.Button(label="end", button_type='success')
 
         self.setup_callbacks()
 
         self.app = self.make_app()
+        self.doc = None
+
+    @property
+    def start(self):
+        """
+        current start value of slider
+        """
+        return self.range_slide.value[0]
+
+    @start.setter
+    def start(self, val):
+        old = self.range_slide.value
+        new = (val, old[1])
+        self.range_slide.value = new
+        #self.range_slide.trigger('value', old, new)
+        old_loc = self.start_span.location
+        self.start_span.location= val
+        # self.start_span.trigger('location', old_loc, val)
+
+    @property
+    def end(self):
+        """
+        current end value of slider
+        """
+        return self.range_slide.value[1]
+
+    @end.setter
+    def end(self, val):
+        old = self.range_slide.value
+        new = (old[0], val)
+        self.range_slide.value = new
+        #self.range_slide.trigger('value', old, new)
+        old_loc = self.end_span.location
+
+        self.end_span.location = val
+        # self.end_span.trigger('location', old_loc, val)
 
     def make_fig(self):
         fig = bok.figure()
@@ -214,6 +290,9 @@ class RangeAnalyserGui:
                                                               'end_span': self.end_span}))
         self.fig.x_range.callback = CustomJS(code=self.update_range_slide,
                                         args={'range_slide': self.range_slide})
+        self.start_connected.on_click(self.toggle_start_connected)
+        self.end_connected.on_click(self.toggle_end_connected)
+                                        
 
     def make_app(self):
         self.fig.add_layout(self.start_span)
@@ -226,15 +305,41 @@ class RangeAnalyserGui:
             self.analyser.analyses[analysis.name] = analysis
             analysis_guis.append(analysis.gui.as_row())
 
-        layout = bklayouts.layout([self.fig, bklayouts.column(*analysis_guis)], self.range_slide)
+        layout = bklayouts.layout(
+            [self.fig, bklayouts.column(*analysis_guis, bklayouts.row(self.start_connected,
+                                                                      self.end_connected, width=300))],
+                                   self.range_slide)
 
         def modify_doc(doc):
+            self.doc = doc
             doc.add_root(layout)
+            doc.add_periodic_callback(self.update_connected, 100)
 
         handler = FunctionHandler(modify_doc)
         app = Application(handler)
         return app
 
+    def update_connected(self):
+        old_start, old_end = self.start_connected.button_type, self.end_connected.button_type
+        self.start_connected.button_type = "success" if self.analyser.start_connected else "danger"
+        self.end_connected.button_type = "success" if self.analyser.end_connected else "danger"
+    
+    def toggle_start_connected(self):
+        if self.analyser.start_connected:
+            self.analyser.start = self.start
+        else:
+            self.analyser.start = None
+        self.update_connected()
+        
+    def toggle_end_connected(self):
+        if self.analyser.end_connected:
+            self.analyser.end = self.end
+        else:
+            self.analyser.end = None
+        self.update_connected()
+    
+            
+        
 
 class BaseAnalysisGui:
     """
@@ -245,7 +350,7 @@ class BaseAnalysisGui:
         self.analyser = analyser
         self.analysis = analysis
 
-        self.label_input = TextInput(value=f'{analysis.name} 1')
+        self.label_input = TextInput(value=f'{analysis.short} 1')
         self.do_button = widgets.Button(label=f'Run {analysis.name}')
         self.do_button.on_click(self.run)
 
@@ -294,6 +399,22 @@ class BaseAnalysis:
     def run(self):
         pass
 
+    def mrun(self, label, start, end):
+        """
+        Manually run the analysis basically emulates clicking on Run with the range set to start, end
+        """
+        old_start, old_end = self.analyser._start, self.analyser._end
+        self.analyser.start = start
+        self.analyser.end = end
+
+        result = self.run()
+
+        # otherwise would move slider unexpectedly
+        self.analyser.start, self.analyser.end = old_start, old_end
+
+        self.results[label] = result
+        return result
+
     def __getitem__(self, item):
         return self.results[item]
 
@@ -308,7 +429,7 @@ class MaximaGui(BaseAnalysisGui):
 
         arrow = annotations.Arrow(x_start=x_start, y_start=max_y,
                                   x_end=max_x, y_end=max_y)
-        label = annotations.Label(text=f"{self.current_label}: {max_y}", x=x_start, y=max_y, text_align='right')
+        label = annotations.Label(text=f"{self.current_label}: {max_y:.1f}", x=x_start, y=max_y, text_align='right')
 
         self.analyser.gui.fig.renderers.extend([arrow, label])
 
@@ -372,11 +493,15 @@ class FWHM(BaseAnalysis):
 
 class IntegrateGui(BaseAnalysisGui):
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pallet = itertools.cycle(bokeh.palettes.Category10[10])
+
     def annotate(self):
         A, (start, end) = self.analysis.results[self.current_label]
         x = self.analyser.rangex
         y = self.analyser.rangey
-        self.analyser.gui.fig.varea(x=x, y1=np.zeros_like(y), y2=y)
+        self.analyser.gui.fig.varea(x=x, y1=np.zeros_like(y), y2=y, color=next(self.pallet))
         label = annotations.Label(text=f"{self.current_label}: {A:.1f}", x=(start + end) / 2, y=0, text_align='center')
         self.analyser.gui.fig.renderers.append(label)
 

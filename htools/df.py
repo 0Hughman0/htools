@@ -1,7 +1,7 @@
 from scipy import interpolate
 
 
-def find_FWHM(df, ylabel, xlabel=None):
+def find_FWHM(df, ylabel, xlabel=None, min_corr=False):
     """
     Find the FWHM ylabel some data
     
@@ -11,6 +11,8 @@ def find_FWHM(df, ylabel, xlabel=None):
         Column containing ylabel values
     xlabel : str
         Column containing xlabel values, defualt is None in which case uses df.index
+    min_corr : bool
+        Correct for minima not being at zero i.e. shift all y values down by `y.min()`
 
     Returns
     =======
@@ -25,11 +27,16 @@ def find_FWHM(df, ylabel, xlabel=None):
     x = df[xlabel] if xlabel else df.index
     MAX = y.max()
     MIN = y.min()
-    HM =  MIN + ((MAX - MIN) / 2)
-    DX = HM / 2
-    isplit = y.idxmax()
-    left_slopex, left_slopey = x[:isplit], y[:isplit]
-    right_slopex, right_slopey = x[isplit:], y[isplit:]
+    HM = MIN + ((MAX - MIN) / 2) if min_corr else MAX / 2
+
+    # Fixes problem when uses indexes - things are confusing with indexes that contain 1 stepped integers!
+    
+    isplit = df.index.get_loc(y.idxmax())
+    #else:
+        # isplit = df.loc[y.idxmax(), xlabel]
+
+    left_slopex, left_slopey = x.values[:isplit], y.values[:isplit]
+    right_slopex, right_slopey = x.values[isplit:], y.values[isplit:]
 
     left_f = interpolate.interp1d(left_slopey, left_slopex)
     right_f = interpolate.interp1d(right_slopey, right_slopex)
