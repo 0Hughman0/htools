@@ -7,9 +7,6 @@ from bokeh.application import Application
 from bokeh.application.handlers import FunctionHandler
 from bokeh.io import show
 from bokeh.models import HoverTool, Span, RangeSlider, widgets, annotations, TextInput, NormalHead
-from bokeh.core.has_props import HasProps
-from bokeh.model import Model
-from bokeh.core.properties import Bool
 from bokeh.models.callbacks import CustomJS
 import bokeh.palettes
 
@@ -58,7 +55,6 @@ class RangeAnalyser:
 
         self._start = None
         self._end = None
-        self._range_state = RangeState()
 
         self.gui = RangeAnalyserGui(self)
 
@@ -202,7 +198,6 @@ class RangeAnalyserGui:
         start_span.change.emit();
         end_span.location = cb_obj.value[1];        
         end_span.change.emit();
-        }
         """
 
     update_range_slide = \
@@ -292,7 +287,6 @@ class RangeAnalyserGui:
                                         args={'range_slide': self.range_slide})
         self.start_connected.on_click(self.toggle_start_connected)
         self.end_connected.on_click(self.toggle_end_connected)
-                                        
 
     def make_app(self):
         self.fig.add_layout(self.start_span)
