@@ -1,5 +1,7 @@
 import abc
 import re
+from pathlib import Path
+import itertools
 
 import bokeh.plotting as bok
 from bokeh import layouts as bklayouts
@@ -10,13 +12,65 @@ from bokeh.models import HoverTool, Span, RangeSlider, widgets, annotations, Tex
 from bokeh.models.callbacks import CustomJS
 import bokeh.palettes
 
-import itertools
-
 import numpy as np
 
 from scipy import integrate
+from scipy.optimize import curve_fit
+from scipy.special import wofz
+
+from IPython.display import Markdown
+from ipywidgets import FileUpload
 
 from .df import find_FWHM
+
+
+class EImage:
+    """
+    Embeded image class - class for storing state of an image embeded into a Jupyter Notebook
+    """
+    images = {}
+
+    def __new__(cls, filename):
+        if filename in cls.images:
+            return cls.images[filename]
+        else:
+            obj = super().__new__(cls)
+            obj.widget = FileUpload()
+            obj.file = Path(filename)
+            cls.images[filename] = obj
+            return obj
+
+    @property
+    def ready(self):
+        return self.file.exists()
+
+    @property
+    def markdown(self):
+        return Markdown('![{}]({})'.format(self.file, self.file))
+
+    @property
+    def loaded(self):
+        return bool(self.widget.data)
+
+    def write(self):
+        self.file.write_bytes(self.widget.data[0])
+
+
+def eimage(filename):
+    """
+    Embed an image into a notebook from file system, if it doesn't exist allow to upload one
+    :param filename: str
+        name of file to lookup, or write to if it doesn't exist.
+    :return: object
+        either FileUpload widget if image doesn't exist yet, or IPython.display.Markdown to render image
+    """
+    im = EImage(filename)
+    if im.ready:
+        return im.markdown
+    if im.loaded:
+        im.write()
+        return im.markdown
+    return im.widget
 
 
 def increment_label(label):
@@ -520,3 +574,98 @@ class Integrate(BaseAnalysis):
         """
         an = self.analyser
         return integrate.trapz(an.rangey, an.rangex), (an.start, an.end)
+
+
+class PeakFitGuiBase(BaseAnalysisGui):
+
+    def annotate(self):
+        fit, _ = self.analysis.results[self.current_label]
+        self.analyser.gui.fig.line(self.analyser.rangex, self.analysis.func(self.analyser.rangex, *fit), line_dash='dashed', color='black')    
+
+
+class PeakFitBase(BaseAnalysis):
+    
+    gui_cls = PeakFitGuiBase
+    
+    def func(self, *args):
+        pass
+        
+    def make_p0(self):
+        return None
+        
+    def run(self):
+        an = self.analyser
+        fit, res = curve_fit(self.func, an.rangex, an.rangey, p0=self.make_p0())
+        return fit, res
+
+
+@RangeAnalyser.add_analysis
+class Gaus(PeakFitBase):
+    name = 'gaus'
+    short = 'gaus'
+    
+    def func(self, x, A, mid, alpha, y0):
+        x += -mid
+        return A * np.sqrt(np.log(2) / np.pi) / alpha * np.exp(-(x / alpha)**2 * np.log(2)) + y0
+        
+    def make_p0(self):
+        an = self.analyser
+        return (an.rangey.max(), np.mean(an.rangex), 1, 0)
+        
+    def run(self):
+        an = self.analyser
+        fit, res = curve_fit(self.func, an.rangex, an.rangey, p0=self.make_p0(), bounds=((0, -np.inf, 0, 0), (np.inf, np.inf, np.inf, np.inf)))
+        return fit, res
+        
+
+@RangeAnalyser.add_analysis
+class Lorentz(PeakFitBase):
+    name = 'lorentz'
+    short = 'lortz'
+    
+    def func(self, x, A, mid, width, y0):
+        x += -mid
+        return (A * width**2 / ((x-mid)**2+ width ** 2))
+
+    def make_p0(self):
+        an = self.analyser
+        return (an.rangey.max(), np.mean(an.rangex), an.xrange, 0)
+
+    def run(self):
+        an = self.analyser
+        fit, res = curve_fit(self.func, an.rangex, an.rangey, p0=self.make_p0(), bounds=((0, -np.inf, 0, 0), (np.inf, np.inf, np.inf, np.inf)))
+        return fit, res
+        
+@RangeAnalyser.add_analysis
+class Voigt(PeakFitBase):
+    name = 'voigt'
+    short = 'voigt'
+    
+    def func(self, x, A, mid, y0, alpha1, gamma1, alpha2, gamma2):
+        """
+        Return the Voigt line shape at x with Lorentzian component HWHM gamma
+        and Gaussian component HWHM alpha.
+
+        """
+        x += -mid
+        
+        sigma1 = alpha1 / np.sqrt(2 * np.log(2))
+        sigma2 = alpha2 / np.sqrt(2 * np.log(2))
+        
+        y1 = np.real(wofz((x + 1j*gamma1)/sigma1/np.sqrt(2))) / sigma1\
+                                                               /np.sqrt(2*np.pi)
+
+        y2 = np.real(wofz((x + 1j*gamma2)/sigma2/np.sqrt(2))) / sigma2\
+                                                               /np.sqrt(2*np.pi)
+
+        return A * ((y1 + y2) + y0)
+    
+    def make_p0(self):
+        an = self.analyser
+        return (an.rangey.max(), np.mean(an.rangex), 0, an.xrange, an.xrange, an.xrange, an.xrange)
+    
+    def run(self):
+        an = self.analyser
+        fit, res = curve_fit(self.func, an.rangex, an.rangey, p0=self.make_p0(), bounds=((0, -np.inf, 0, 0, 0, 0, 0), (np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf)))
+        return fit, res
+    
